@@ -1,0 +1,655 @@
+---
+title: "Yelp Classification Modeling"
+author: "Shannon Rumsey"
+date: "Fall 2022"
+output:
+  html_document:
+    theme: cosmo
+    df_print: paged
+    code_folding: hide
+    toc_depth: 5
+    toc: true
+    toc_float:
+      collapsed: false
+      smoooth_scroll: true
+---
+
+# Introduction
+
+### What is Yelp?
+
+![](images/Screen%20Shot%202022-12-02%20at%201.48.49%20PM.png){width="589"}
+
+Yelp is a platform, available on both the computer and phone, that enables businesses to create a page with information regarding hours of business, reservations, photos, and more. There is another added aspect of yelp that enables consumers to write reviews and rate certain businesses. Yelp allows for easier discovery of not-so-known places and allows consumers to gain un-sponsored advice.
+
+![](images/Screen%20Shot%202022-12-05%20at%204.40.48%20PM.png){width="636"}
+
+On the platform, users can leave written reviews that also include the star review a user gives and any pictures they may want to include. Other users on yelp can rate another review as "helpful", "funny", or "useful". Aspects such as these provide an honest capture of the business and any reviews posted.
+
+### Data Background
+
+The data used for this project is a sample of the published [Yelp Dataset](https://www.yelp.com/dataset) available on the company website. The public data comes in the form of multiple separate JSON files pertaining to business, review, and reviewer information. For the purpose of this project, we will be focusing on the JSON data files titled `business.json` and `review.json`. For easy analysis of the files, cleaning and converting columns were necessary. The `review.json` and `business.json` files were written in JSON, a file format that can rather difficult to process in R and Rstudio. Because of the difficulties that may arise in R, pre-processing took place using Python. With the help of Python and the Pandas library, the two datasets were combined into one and read to a CSV file. Only the CSV file will be referred to for the remainder of the project. For simplicity, we will only be working with food-related businesses in the Santa Barbara County.
+
+```{r, collapse=TRUE}
+yelpdata <- read.csv("/Users/shannon/Documents/PSTAT-131-Project/PSTAT-131-Final-Project/Data/yelpbusinessreviews.csv")
+head(yelpdata)
+```
+
+```{r, include=FALSE}
+length(unique(yelpdata$name))
+dim(yelpdata)
+```
+
+The dataset, found in the file `yelpbusinessreviews.csv` has $17$ columns and $189953$ rows, $849$ of them being unique restaurant information. Each row in the dataset accounts for one individual review of a business. This can make analysis of the business itself rather difficult due to the duplicate rows. For this purpose, we will isolate and work only on rows with unique business names when looking at business information. The only purpose for multiple lines at each `business_id` is to display each individual text review, therefore, after analyzing the review text, we can remove the column.
+
+### Proposed Question
+
+The company, Yelp, provides an amazing platform for business owners and customers alike. When someone uses the website or app, they contribute data that helps open the door to answering many questions. An essential part of the Yelp interface is the *business ratings* and *reviews* which enables users to share their experiences or hear from others.
+
+Famous real estate tycoon, Lord Harold Samuel, has been quoted as saying["[t]here are three things that matter in property: location, location, location"](https://www.nytimes.com/2009/06/28/magazine/28FOB-onlanguage-t.html). That being said, the hypothesis follows that if location is so important, as Samuel describes, then ratings and reviews should be connected somehow. In practice, our model will take in review and rating information as a means to predict the location of a food-related business, with our sample being enclosed in the Santa Barbara County.
+
+The structure of the model can be broken down into a simple flowchart. We have two main sources of information: the reviews and the business. From these sources, I was able to extract important data relating to overall review sentiments, ratings, review votes, and more.
+
+```{r, collapse=TRUE}
+library(DiagrammeR)
+mermaid("
+  graph LR
+  A[Review Information] --> B(Average Length)
+  A --> C(Reviewer Rating)
+  A --> D(Review Votes)
+  A --> E(Review Sentiment)
+  F[Business Information] --> G(Business Rating)
+  F --> H(Number of Reviews)
+  B --> I{City of Business}
+  C --> I{City of Business}
+  D --> I{City of Business}
+  E --> I{City of Business}
+  G--> I{City of Business}
+  H --> I{City of Business}
+")
+```
+
+# Exploratory Data Analysis
+
+### Loading Packages and Data
+
+To begin our analysis, it is critical that we install and utilize necessary packages.
+
+```{r setup, collapse=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(ggthemes)
+library(dplyr)
+library(tidyjson)
+library(RColorBrewer)
+library(ggmap)
+library(tidytext)
+library(randomForest)
+library(xgboost)
+library(broom)
+library(rpart.plot)
+library(vip)
+library(corrplot)
+library(knitr)
+library(keras)
+library(tensorflow)
+library(kknn)
+library(yardstick)
+```
+
+### Data Pre-processing
+
+Since we are going to be removing the text column from the dataset, it is important that we gather as much information from it as possible. To start, we will be extracting the average length of reviews left on each unique business. This will serve as one of the predictors for the models.
+
+```{r class.source = 'fold-show', message=FALSE}
+# avg length of reviews for a business
+review_lengths <- yelpdata %>% 
+  mutate(lengths = str_length(text))
+
+avg_len <- review_lengths %>%
+  group_by(business_id) %>%
+  summarise(mean_len = mean(lengths))
+```
+
+Next, sentiment analysis will be used to count the occurrences of words "good" and "bad" in reviews left the businesses as well as the average sentiment score (the number of positive words divided by the total number of words).
+
+```{r, collapse=TRUE, message=FALSE}
+review_words <- yelpdata %>% 
+  dplyr::select(c(business_id, business_rating, text)) %>% 
+  unnest_tokens(word, text)
+
+# get rid of stop words
+cleaned <- review_words %>%
+  anti_join(get_stopwords())
+
+# using the "bing" lexicon library
+sentiment <- get_sentiments("bing")
+
+# determines whether a word is "positive" or "negative"
+positive <- get_sentiments("bing")  %>%
+  filter(sentiment == "positive")
+
+negative <- get_sentiments("bing")  %>%
+  filter(sentiment == "negative")
+
+```
+
+```{r class.source = 'fold-show', message=FALSE}
+# number of times "bad" is used in a review (per business)
+bad_count <- review_words %>%
+  group_by(business_id) %>%
+  semi_join(negative) %>%
+  count(word, sort = TRUE) %>%
+  filter(word == "bad") %>%
+  mutate(bad_count = n) %>%
+  select(c(business_id, bad_count)) %>%
+  distinct(business_id, .keep_all = TRUE)
+
+# number of times "good" is used in a review (per business)
+good_count <- review_words %>%
+  semi_join(positive) %>%
+  group_by(business_id) %>%
+  count(word, sort = TRUE) %>%
+  filter(word == "good") %>%
+  mutate(good_count = n) %>%
+  select(c(business_id, good_count)) %>%
+  distinct(business_id, .keep_all = TRUE)
+
+# adding a sentiment score predictor
+yelp_sentiment <- review_words %>%
+  inner_join(sentiment) %>%
+  count(business_id, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment_score = positive / (positive + negative))
+```
+
+We are now able to get rid of the extra rows that account for each individual review. This will help with computing time and storage.
+
+```{r class.source = 'fold-show'}
+# to get rid of duplicate instances of restaurants
+distinct_restaurants <- yelpdata %>% distinct(business_id, .keep_all = TRUE)
+```
+
+```{r, collapse=TRUE}
+# merging all of the new predictors to the main dataset
+yelpdata_sentiments <- merge(distinct_restaurants, yelp_sentiment, on = "business_id")
+yelpdata_sentiments <- merge(yelpdata_sentiments, good_count, on = "business_id")
+yelpdata_sentiments <- merge(yelpdata_sentiments, bad_count, on = "business_id")
+yelpdata_sentiments <- merge(yelpdata_sentiments, avg_len, on = "business_id")
+```
+
+The last set of predictors we will be creating are the average stars left by reviewers and the total times reviews were voted useful, funny, and cool.
+
+```{r class.source = 'fold-show'}
+# average number of stars a reviewer leaves, per business
+reviewstars_added <- yelpdata %>%
+  group_by(business_id) %>%
+  summarise(review_stars = mean(stars))
+
+# total "useful" votes left on a review, per business
+useful_added <- yelpdata %>%
+  group_by(business_id) %>%
+  summarise(useful_total = sum(useful))
+
+# total "funny" votes left on a review, per business
+funny_added <- yelpdata %>%
+  group_by(business_id) %>%
+  summarise(funny_total = sum(funny))
+
+# total "cool" votes left on a review, per business
+cool_added <- yelpdata %>%
+  group_by(business_id) %>%
+  summarise(cool_total = sum(cool))
+```
+
+```{r, collapse=TRUE}
+# merging new predictors woth maiin dataset
+yelpdata_sentiments <- merge(yelpdata_sentiments, reviewstars_added, on = "business_id")
+yelpdata_sentiments <- merge(yelpdata_sentiments, useful_added, on = "business_id")
+yelpdata_sentiments <- merge(yelpdata_sentiments, funny_added, on = "business_id")
+yelpdata_sentiments <- merge(yelpdata_sentiments, cool_added, on = "business_id")
+```
+
+Now that we have finished creating our predictors, we can get rid of any unnecessary columns. These columns may contain information that is irrelevant to the goal of this experiment or redundant information. We will be removing the columns `business_id`, `address`, `state`, `postal_code`, `review_id`, and `user_id`.
+
+```{r, collapse=TRUE}
+yelp_clean <- yelpdata_sentiments %>% dplyr::select(c(name, city, latitude, longitude, business_rating, review_count, bad_count, good_count, sentiment_score, mean_len, review_stars, useful_total, funny_total, cool_total))
+```
+
+```{r, include=FALSE}
+# changing duplicate factor level
+yelp_clean$city <- gsub("Santa  Barbara", "Santa Barbara", yelp_clean$city)
+```
+
+### Data Exploration
+
+Now that the dataset has all the necessary predictors, we can finally begin exploring the data as a whole.
+
+```{r, collapse=TRUE}
+head(yelp_clean)
+```
+
+Business ratings are a key identifier of business success on yelp. Lets take a look at the range of stars we will be working with.
+
+```{r, collapse=TRUE}
+min(yelp_clean$business_rating)
+max(yelp_clean$business_rating)
+```
+
+The range for stars is $1.5$ to $5$ whereas the total possible range on Yelp is $1$ to $5$. Please note that these values are *discrete* in that they are either whole, such as $1$, or half integers, such as $1.5$. The range being narrower may suggest that the Santa Barbara County does better as a whole by having a tighter range that is skewed in favor of a higher rating.
+
+```{r, collapse=TRUE}
+table <- yelp_clean %>%
+  group_by(business_rating) %>%
+  dplyr::count()
+
+kable(table, col.names = c("Restaurant Rating", "Number of Restaurants"), align = "cc")
+```
+
+The most common rating a restaurant receives is $4$ stars, with a count of $242$. Ratings $3.5$ and $4.5$ follow closely to the rating of $4$ with counts $111$ and $160$ respectively. The overall distribution of restaurant ratings appears similar to that of a normal distribution that is left skewed.
+
+```{r, collapse=TRUE}
+review_count <- yelp_clean$review_count
+business_rating <- yelp_clean$business_rating
+sentiment_score <- yelp_clean$sentiment_score
+longitude <- yelp_clean$longitude
+latitude <- yelp_clean$latitude
+mean_len <- yelp_clean$mean_len
+review_stars <- yelp_clean$review_stars
+useful_total <- yelp_clean$useful_total
+cool_total <- yelp_clean$cool_total
+funny_total <- yelp_clean$funny_total
+corr_review <- data.frame(business_rating, review_count, sentiment_score, longitude, latitude, mean_len, review_stars, useful_total, cool_total, funny_total)
+corrplot(cor(corr_review), type = "lower", method = "color", col = brewer.pal(n = 10, name = "RdGy"))
+```
+
+The predictors `useful_total`, `cool_total`, `funny_total`, and `review_count` are all positively correlated. review_stars and business_rating are also positively correlated as well as `sentiment_score` and `r`eview_stars`. To handle these predictor correlations, we will be including a step_pca() function in the model recipe later in the document.
+
+```{r, collapse=TRUE}
+ggplot(yelp_clean) + geom_point(aes(y = business_rating, x = sentiment_score), color = "red3") + theme_classic() + xlab("Overall Positivity of Reviews") + ylab("Business Rating") + ggtitle("Correlation Between Review Sentiment and Rating")
+```
+
+We can see in the point plot above that as sentiment scores increase, business ratings increase as well, almost linearly. This suggests that written reviews, specifically the positivity or negativity of one, have a relationship with the rating a business gets.
+
+To better understand the ratings of businesses, it helps to use a spatial map to visualize how they are geographically distributed.
+
+```{r, warning=FALSE, message=FALSE, collapse=TRUE}
+bottom <- min(yelp_clean$longitude)
+top <- max(yelp_clean$longitude)
+left <- min(yelp_clean$latitude)
+right <- max(yelp_clean$latitude)
+```
+
+```{r, warning=FALSE, message=FALSE, collapse=TRUE}
+# santa barbara county
+map_bounds <- c(left = -119.98, bottom = 34.3, right = -119.5, top = 34.5)
+sb <- get_stamenmap(bbox = map_bounds, zoom = 11, scale = "auto", maptype = "toner-lite")
+ggmap(sb) +  geom_point(data = yelp_clean,  aes(x = longitude, y = latitude, color = business_rating)) + theme_classic() + xlab("Longitude") + ylab("Latitude") + ggtitle("Map of Santa Barbara County") + scale_color_gradient(low = "black", high = "red")
+```
+
+The businesses are not evenly dispersed throughout the Santa Barbara county. The majority of businesses seem to be located in Santa Barbara but there are also clusters in Carpenteria and Goleta.
+
+```{r, warning=FALSE, message=FALSE, collapse=TRUE}
+# isla vista
+map_bounds <- c(left = -119.89, bottom = 34.4, right = -119.825, top = 34.42)
+sb <- get_stamenmap(bbox = map_bounds, zoom = 14, scale = "auto", maptype = "toner-lite")
+ggmap(sb) +  geom_point(data = yelp_clean,  aes(x = longitude, y = latitude, color = business_rating)) + theme_classic() + xlab("Longitude") + ylab("Latitude") + ggtitle("Map of Isla Vista") + scale_color_gradient(low = "black", high = "red")
+```
+
+Isla Vista only includes a small subset of the businesses in the Santa Barbara county, which makes sense since it is classified as an "unincorporated community" within the county. The rating of businesses does not seem to favor either side of the spectrum.
+
+```{r, warning=FALSE, message=FALSE, collapse=TRUE}
+# Downtown Santa Barbara
+map_bounds <- c(left = -119.78, bottom = 34.38, right = -119.67, top = 34.46)
+sb <- get_stamenmap(bbox = map_bounds, zoom = 15, scale = "auto", maptype = "toner-lite")
+ggmap(sb) +  geom_point(data = yelp_clean,  aes(x = longitude, y = latitude, color = business_rating)) + theme_classic() + xlab("Longitude") + ylab("Latitude") + ggtitle("Map of Downtown Santa Barbara") + scale_color_gradient(low = "black", high = "red")
+```
+
+Downtown Santa Barbara contains the most businesses by far. These business ratings are also pretty evenly dispersed throughout the spectrum. There is a cluster of restaurants that runs along State Street which is Santa Barbara's most popular tourist destination.
+
+```{r, collapse=TRUE}
+ggplot(yelp_clean) + geom_density(aes(x = sentiment_score, fill = city), alpha = 0.3) + scale_fill_brewer(palette = "RdGy") + theme_classic() + ggtitle("Sentiment Scores of All Restaurants") + xlab("Sentiment Score") + ylab("Count")
+```
+
+For all cities, reviews are comprised of more positive than negative words. Summerland's sentiment score distribution is very clearly bi-modal, with means near $0.4$ and $0.8$. Montecito is also bi-modal, but has the lowest variance among the cities.
+
+```{r, collapse=TRUE}
+ggplot(yelp_clean) + geom_boxplot(aes(x = business_rating, y = city), fill = "red3") + theme_classic() + ggtitle("Business Ratings per City") + xlab("Business Ratings") + ylab("City")
+```
+
+The median business rating is $4$ for all of the cities but their distributions differ drastically. Montecito and Summerland have most narrow distributions, whereas Carpenteria, Santa Barbara, and Goleta have very wide distributions. Goleta has businesses with the worst ratings while Montecito and Summerland do not. Summerland, Santa Barbara, and Montecito also seem to have drastic outliers, which are represented by the points on the plot. The boxplot suggests that cities with larger quantities of businesses have a wider distribution, with the exceptions being Carpenteria and Isla Vista.
+
+# Modeling
+
+### Data Splitting and K-Fold Cross Validation
+
+It is time to build our models. The first step of this section is to coerce some predictors into factors. Despite business_rating being numeric, it acts more as levels as opposed to a strict quantitative value. The city predictor is another one we will coerce into a factor. This one is more intuitive in that they contain character values instead of numeric.
+
+The second step of this section will be splitting the dataset into a training and testing set, stratifying on the *city* variable. It is important that we stratify this variable to ensure that there is an equal distribution of city values in both training and testing datasets.
+
+```{r}
+set.seed(27)
+yelp_clean$business_rating <- factor(yelp_clean$business_rating, ordered = TRUE)
+yelp_clean$city <- factor(yelp_clean$city)
+# strata city because it is the response variable
+yelp_split <- initial_split(yelp_clean, prop = 0.8, strata = "city")
+yelp_split
+```
+
+```{r}
+yelp_train <- training(yelp_split)
+yelp_test <- testing(yelp_split)
+```
+
+```{r, include=FALSE}
+dim(yelp_train)
+dim(yelp_test)
+```
+
+There are $612$ observations in the the training data and $154$ in the testing data. Each dataset has $14$ columns. It may be feasible to have a ratio of $75\%$ training and $25\%$ testing because we are working with such a small dataset and have such a small testing dataset. For this project, we will leave the ratio at $80\%$ and $20\%$.
+
+```{r, warning=FALSE, message=FALSE, collapse=TRUE}
+yelp_recipe <- recipe(city ~ business_rating + review_count + good_count + bad_count + sentiment_score + mean_len + review_stars + useful_total + funny_total + cool_total, data = yelp_train) %>%
+  step_ordinalscore(business_rating) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(useful_total, funny_total, cool_total, review_count, review_stars, business_rating, num_comp = 2)
+yelp_recipe %>% prep() %>% juice()
+```
+
+The predictors we will be using in the models are the business rating, number of reviews left on the business's yelp page, most common positive and negative words, overall proportion of positive words in reviews, length of reviews, stars from reviews, and review ratings (cool, funny, useful).
+
+```{r class.source = 'fold-show', warning=FALSE, message=FALSE}
+yelp_folds <- vfold_cv(yelp_train, v = 5, strata = "city")
+```
+
+We will also be using K-Fold Cross Validation as the resampling technique. This technique is ideal because of the smaller number of observations in the dataset, hence why we are also using $5$ folds. K-Fold Cross Validation divides the training dataset into $5$ groups, stratifying on the city predictor. The models will be fit on these five groups as a way of "expanding" our limited training data.
+
+### Ridge Regression
+
+The first model we will be fitting is a Ridge Regression model. A Ridge Regression model is a model that constrains the coefficient estimates of parameters using least squares. This constraint helps reduce variance and error within the model. We will be tuning the `mixture`, the proportion of regularization, and `penalty`, the amount of regularization, to find optimal values.
+
+```{r class.source = 'fold-show'}
+yelp_ridge_spec <- multinom_reg(mixture = tune(), penalty = tune()) %>%
+  set_engine("glmnet") %>%
+  set_mode("classification")
+```
+
+```{r class.source = 'fold-show'}
+yelp_ridge_workflow <- workflow() %>%
+  add_model(yelp_ridge_spec) %>%
+  add_recipe(yelp_recipe)
+```
+
+We have set the `mixture` parameter to be anywhere between zero and one. This allows the model itself to decide whether a Lasso (`mixture` = $1$) or Ridge (`mixture` = $0$) Regression is preferred. The `penalty` is log scaled to provide a wide range of possible values.
+
+```{r class.source = 'fold-show'}
+ridge_degree_grid <- grid_regular(mixture(range = c(0, 1)), penalty(range = c(-5, 5)), levels = 10)
+```
+
+```{r, warning=FALSE, message=FALSE, collapse=TRUE, eval=FALSE}
+yelp_ridge_tune_res <- tune::tune_grid(yelp_ridge_workflow, 
+                      resamples = yelp_folds,
+                      grid = ridge_degree_grid,
+                      metrics = metric_set(accuracy))
+
+
+save(yelp_ridge_tune_res, file = "/Users/shannon/Documents/PSTAT-131-Project/PSTAT-131-Final-Project/Models/project_ridge_model.rda")
+```
+
+```{r, collapse=TRUE}
+load("/Users/shannon/Documents/PSTAT-131-Project/PSTAT-131-Final-Project/Models/project_ridge_model.rda")
+autoplot(yelp_ridge_tune_res) + scale_colour_brewer(palette = "RdGy") + theme_classic() + ggtitle("Impact of Regularization on Accuracy") + xlab("Amount of Regularization") + ylab("Accuracy")
+```
+
+The proportion of Lasso Penalty that equals $1$ or $0$ combined with higher amounts of regularization seem to provide the best accuracy.
+
+```{r, collapse=TRUE}
+collect_metrics(yelp_ridge_tune_res) %>%
+  arrange(desc(mean)) %>%
+  select(c(penalty, mixture, mean, std_err))
+```
+
+There are many different models that provide the same accuracy value, for simplicity we will choose the first occurring maximum which is a `mixture` of $0$ and `penalty` of $2.782559e-01$. This provides us with an accuracy of $0.6699630$. The `mixture` equaling $0$ or $1$ suggests that both Ridge and Lasso Regression will provide good outcomes.
+
+```{r, collapse=TRUE}
+best_ridge <- select_best(yelp_ridge_tune_res)
+yelp_final_ridge_workflow <- finalize_workflow(yelp_ridge_workflow, best_ridge)
+yelp_final_ridge_model <- fit(yelp_final_ridge_workflow, data = yelp_train)
+yelp_final_ridge_model %>%
+  extract_fit_parsnip() %>%
+  vip(aesthetics = list(fill = "red3", color = "black")) + theme_classic() + ggtitle("Ridge Regression Selected Variables of Importance")  + xlab("Predictors") + ylab("Importance")
+
+```
+
+According to the Ridge Regression model, the most important predictors are the first and second principal component (Reminder: these were `useful_total`, `funny_total`, `cool_total`, `review_count`, `review_stars`, `business_rating`). The least significant is instances of the word "bad" and "good" in reviews left on a business.
+
+### K Nearest Neighbors
+
+The second model we will be fitting is K-Nearest Neighbors. This model classifies a particular data point based on the category of the nearest data points. We will be tuning the `neighbors` parameter to determine the optimal number for the model.
+
+```{r class.source = 'fold-show'}
+yelp_knn_spec <- nearest_neighbor(neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("classification")
+```
+
+```{r class.source = 'fold-show'}
+yelp_knn_workflow <- workflow() %>%
+  add_recipe(yelp_recipe) %>%
+  add_model(yelp_knn_spec)
+```
+
+The range for neighbors was set to be from five to thirty-five. The range has a minimum of $5$ to prevent over fitting. The maximum is set to $35$ because it seems to be a reasonable number for the amount of data points we have.
+
+
+```{r class.source = 'fold-show'}
+yelp_knn_grid <- grid_regular(neighbors(range = c(5, 35)), levels = 10)
+```
+
+
+```{r, eval=FALSE, collapse=TRUE}
+yelp_knn_tune_res <- tune::tune_grid(yelp_knn_workflow, 
+                      resamples = yelp_folds,
+                      grid = yelp_knn_grid,
+                      metrics = metric_set(accuracy))
+
+
+save(yelp_knn_tune_res, file = "/Users/shannon/Documents/PSTAT-131-Project/PSTAT-131-Final-Project/Models/project_knnmodel.rda")
+```
+
+```{r, collapse=TRUE}
+load("/Users/shannon/Documents/PSTAT-131-Project/PSTAT-131-Final-Project/Models/project_knnmodel.rda")
+autoplot(yelp_knn_tune_res) + scale_colour_brewer(palette = "RdGy") + theme_classic() + ggtitle("Impact of the Number of Nearest Neighbors on Accuracy") + xlab("Number of Nearest Neighbors") + ylab("Accuracy") 
+```
+
+It appears that the accuracy for this model is highest when the number of neighbors is equal to around $30$.
+
+```{r, collapse=TRUE}
+collect_metrics(yelp_knn_tune_res) %>%
+  arrange(desc(mean)) %>%
+  select(c(neighbors, mean, std_err))
+```
+The best model is indeed one with $31$ neighbors. We end up getting an accuracy of $0.6585405$ when we set the `neighbors` parameter to $31$.
+
+```{r, collapse=TRUE}
+yelp_best_knn <- select_best(yelp_knn_tune_res)
+yelp_knn_final_workflow <- finalize_workflow(yelp_knn_workflow, yelp_best_knn)
+yelp_knn_final_model <- fit(yelp_knn_final_workflow, data = yelp_train)
+```
+
+### Boosted Tree
+
+The third model used is a Boosted Tree model. This is a multiple-tree model that grows sequentially. The model learns based on previous performance (in the tree above) and adjusts the weights of each sample. We will be tuning the number of trees, `trees`, and the number of randomly selected predictors, `mtry`.
+
+```{r class.source = 'fold-show'}
+yelp_boost_spec <- boost_tree(mtry = tune(), trees = tune()) %>%
+  set_engine("xgboost", importance = TRUE) %>%
+  set_mode("classification")
+```
+
+```{r class.source = 'fold-show'}
+yelp_boost_workflow <- workflow() %>%
+  add_recipe(yelp_recipe) %>%
+  add_model(yelp_boost_spec)
+```
+
+We are setting the range for `trees` as $10$ and $500$ because the dataset is relatively small. We must be careful on the higher end of this range because Boosted Trees tend to overfit at higher quantities of trees. The `mtry` variable, responsible for the number of randomly selected predictors, was set to the range of $1$ to $4$. This is the range because if we had any less, we would have no predictors and if we had more than we would have all of our predictors or an invalid range.
+
+```{r class.source = 'fold-show'}
+yelp_boost_grid <- grid_regular(mtry(range = c(1, 4)), trees(range = c(10, 500)), levels = 10)
+```
+
+
+```{r, eval=FALSE, collapse=TRUE}
+yelp_boost_tune_res <- tune::tune_grid(yelp_boost_workflow, 
+                      resamples = yelp_folds,
+                      grid = yelp_boost_grid,
+                      metrics = metric_set(accuracy))
+
+save(yelp_boost_tune_res, file = "/Users/shannon/Documents/PSTAT-131-Project/PSTAT-131-Final-Project/Models/project_boostedtree_model.rda")
+```
+
+```{r, collapse=TRUE}
+load("/Users/shannon/Documents/PSTAT-131-Project/PSTAT-131-Final-Project/Models/project_boostedtree_model.rda")
+autoplot(yelp_boost_tune_res) + scale_colour_brewer(palette = "RdGy") + theme_classic() + ggtitle("Impact of the Number of Trees on Accuracy") + xlab("Number of Trees") + ylab("Accuracy")
+```
+
+It seems that as the number of trees increases, we see a sharp decrease in accuracy. There doesn't seem to be a case where a specific randomly selected predictor count dramatically changes the accuracy besides $1$.
+
+```{r, collapse=TRUE}
+collect_metrics(yelp_boost_tune_res) %>%
+  arrange(desc(mean)) %>%
+  select(c(mtry, trees, mean, std_err))
+```
+
+The model with the best accuracy, $0.6569540$, has $1$ randomly selected predictor and $10$ trees.
+
+```{r, collapse=TRUE, warning=FALSE, message=FALSE}
+yelp_best_boost <- select_best(yelp_boost_tune_res)
+yelp_boost_final_workflow <- finalize_workflow(yelp_boost_workflow, yelp_best_boost)
+yelp_boost_final_model <- fit(yelp_boost_final_workflow, data = yelp_train)
+```
+
+```{r, collapse=TRUE}
+yelp_boost_final_model %>%
+  extract_fit_parsnip() %>%
+  vip(aesthetics = list(fill = "red3", color = "black")) + theme_classic() + ggtitle("Boosted Trees Selected Variables of Importance")  + xlab("Predictors") + ylab("Importance")
+```
+
+The most significant predictors according to the Boosted Tree model are the average length of reviews and the first principal component. The least significant are the instances of "bad" and the sentiment score.
+
+### Random Forest
+
+Our last and final model is the Random Forest. The Random Forest model is a set of decision trees that take a random sample of predictors to choose from when splitting on nodes. Trees in a Random Forest model are not sequential like in a Boosted Tree model. The parameters that are being tuned are the same as with the Boosted Tree.
+
+```{r class.source = 'fold-show'}
+yelp_forest_spec <- rand_forest(mtry = tune(), trees = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+```
+
+```{r class.source = 'fold-show'}
+yelp_forest_workflow <- workflow() %>%
+  add_recipe(yelp_recipe) %>%
+  add_model(yelp_forest_spec)
+```
+
+```{r class.source = 'fold-show'}
+yelp_forest_grid <- grid_regular(mtry(range = c(1, 4)), trees(range = c(10, 500)), levels = 10)
+```
+
+```{r, eval=FALSE}
+yelp_forest_tune_res <- tune::tune_grid(yelp_forest_workflow, 
+                      resamples = yelp_folds,
+                      grid = yelp_forest_grid,
+                      metrics = metric_set(accuracy))
+save(yelp_forest_tune_res, file = "/Users/shannon/Documents/PSTAT-131-Project/PSTAT-131-Final-Project/Models/project_randomforest_model.rda")
+```
+
+```{r, collapse=TRUE}
+load("/Users/shannon/Documents/PSTAT-131-Project/PSTAT-131-Final-Project/Models/project_randomforest_model.rda")
+autoplot(yelp_forest_tune_res) + scale_colour_brewer(palette = "RdGy") + theme_classic() + ggtitle("Impact of Different Parameters on Accuracy") + xlab("Number of Trees") + ylab("Accuracy")
+```
+
+The number of randomly selected predictors that resulted in the highest accuracy is $1$. As the number of trees increase, the accuracy tends to fluctuate. It seems that the best performing number of trees is around $200$.
+
+```{r, collapse=TRUE}
+collect_metrics(yelp_forest_tune_res) %>% 
+  arrange(desc(mean)) %>%
+  select(c(mtry, trees, mean, std_err))
+```
+
+We achieve the highest accuracy, $0.6634320$, when we have $1$ randomly selected predictor and $173$ trees.
+
+```{r, collapse=TRUE}
+best_forest <- select_best(yelp_forest_tune_res)
+yelp_final_forest_workflow <- finalize_workflow(yelp_forest_workflow, best_forest)
+yelp_final_forest_model <- fit(yelp_final_forest_workflow, data = yelp_train)
+yelp_final_forest_model %>%
+  extract_fit_parsnip() %>%
+  vip(aesthetics = list(fill = "red3", color = "black")) + theme_classic() + ggtitle("Random Forest Selected Variables of Importance")  + xlab("Predictors") + ylab("Importance")
+```
+
+According to the Random Forest model, the most important predictors are the first principal component and the sentiment score. The least significant are the "bad" and "good" counts.
+
+# Model Selection and Performance
+
+Now that we have fitted all of our models, its time to choose the best performing one to fit the testing data on.
+
+```{r, collapse=TRUE}
+ridge_acc <- predict(yelp_final_ridge_model, new_data = yelp_train, type = "class") %>%
+  bind_cols(yelp_train %>% select(city)) %>%
+  accuracy(truth = city, estimate = .pred_class)
+
+knn_acc <- predict(yelp_knn_final_model, new_data = yelp_train, type = "class") %>%
+  bind_cols(yelp_train %>% select(city)) %>%
+  accuracy(truth = city, estimate = .pred_class)
+
+boost_acc <- predict(yelp_boost_final_model, new_data = yelp_train, type = "class") %>%
+  bind_cols(yelp_train %>% select(city)) %>%
+  accuracy(truth = city, estimate = .pred_class)
+
+forest_acc <- predict(yelp_final_forest_model, new_data = yelp_train, type = "class") %>%
+  bind_cols(yelp_train %>% select(city)) %>%
+  accuracy(truth = city, estimate = .pred_class)
+
+bind_rows(ridge_acc, knn_acc, boost_acc, forest_acc) %>%
+  tibble() %>%
+  mutate(model = c("Ridge", "KNN", "Boosted", "Random Forest")) %>%
+  select(model, .estimate) %>%
+  arrange(.estimate)
+```
+
+The Ridge Regression model performed the worst with an accuracy of $0.6699346$. The K-Nearest Neighbors model did not perform much better. There is a jump in accuracy with the Boosted Tree model and another with the Random Forest. The Random Forest model performed the best with an accuracy of $0.8300654$.
+
+```{r, collapse=TRUE}
+forest_test <- fit(yelp_final_forest_model, yelp_test)
+
+predict(forest_test, new_data = yelp_test, type = "class") %>%
+  bind_cols(yelp_test %>% select(city)) %>%
+  accuracy(truth = city, estimate = .pred_class)
+```
+
+Once fitted to the testing data, the model does better but not by much. We end up with our best accuracy of $0.8441558$. This is not a great accuracy but definitely better than a coin-flip and would be considered significant.
+
+```{r, collapse=TRUE, warning=FALSE, message=FALSE}
+augment(forest_test, new_data = yelp_test) %>%
+  conf_mat(truth = city, estimate = .pred_class) %>%
+  autoplot(type = "heatmap") + scale_fill_distiller(palette = "RdGy") + ggtitle("Random Forest Performance")
+```
+
+Taking a look at the confusion matrix, it seems that the model would simply guess the city as "Santa Barbara" for the majority of cases. We can attribute this behavior to the small dataset size and a large proportion of the data points being "Santa Barbara".
+
+# Conclusion
+
+We set out to model the relationship between the city of a food-related business and the business's review characteristics. In doing so, we found that quite a few predictors were positively correlated with each other. This was interesting because it posed the idea that these predictors and the predictor city are all closely related to each other.
+
+We also saw that PC1 is consistently one of the most significant predictors for each of the models. The principal components were created from review ratings, number of reviews, and votes. This makes sense as businesses in higher traffic cities, such as Santa Barbara, may have more customers and therefore, more reviews and activity.
+
+For the best performing model, we saw that the Random Forest worked well. In the end we got an accuracy of $0.8441558$. A cause for concern with this model can be seen from the confusion matrix. It would be preferred to see a better distributed range of guesses when, in reality, Santa Barbara was the most common guess. It is not obvious whether the model guessed Santa Barbara as the city because there are no clear cut patterns for this specific city or if it is because it makes up a larger proportion of the dataset. If this project were to be replicated, a larger dataset may provide a better performing model.
+
+Note: All sources used will be in the Sources.md file

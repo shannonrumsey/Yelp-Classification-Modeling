@@ -1,0 +1,86 @@
+---
+title: "Data Preprocessing"
+author: "Shannon Rumsey"
+date: "10/5/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(reticulate)
+conda_create("r-reticulate")
+py_install("pandas")
+py_install("numpy")
+```
+
+
+I am cleaning the business data set similar to how the article does this. I don't want to drop any columns as I won't know which are significant yet. 
+
+```{python}
+import pandas as pd
+import numpy as np
+# read in first dataset
+business = pd.read_json("/Users/shannon/Documents/PSTAT-131-Project/Data/yelp datasets/business.json", lines = True)
+```
+
+
+```{python}
+# only selecting open businesses
+only_open = business[business["is_open"] != 0] 
+# only selecting businesses in california
+only_open_california = only_open[only_open["state"] == "CA"]
+# We will only be working with Santa Barbara county for simplicity
+only_sb = only_open_california[~only_open_california["city"].isin(["Truckee", "Ventura", "Port Hueneme", "West Hill", "Sparks", "Kings Beach", "Tampa", "Oxnard", "Eagle", "Reno", "Meridian", "Spring Hill", "Aliso Viejo", "South Lake Tahoe", "Costa Mesa"])]
+# rename duplicate variables
+only_sb["city"] = only_sb["city"].replace("santa Barbara",  "Santa Barbara")
+only_sb["city"] = only_sb["city"].replace("Santa Barbara ",  "Santa Barbara")
+only_sb["city"] = only_sb["city"].replace("Santa Barbara,",  "Santa Barbara")
+only_sb["city"] = only_sb["city"].replace("Santa Barbara,",  "Santa Barbara")
+only_sb["city"] = only_sb["city"].replace("SANTA BARBARA AP",  "Santa Barbara")
+only_sb["city"] = only_sb["city"].replace("Santa Barbara & Ventura Counties",  "Santa Barbara")
+only_sb["city"] = only_sb["city"].replace("Santa Barbra",  "Santa Barbara")
+only_sb["city"] = only_sb["city"].replace("SANTA BARBARA",  "Santa Barbara")
+only_sb["city"] = only_sb["city"].replace("Santa  Barbara",  "Santa Barbara")
+only_sb["city"] = only_sb["city"].replace("Carpinteria ",  "Carpinteria")
+```
+
+```{python}
+refined = only_sb.drop(["is_open", "attributes", "hours"], axis = 1)
+# modifying the name of the stars column because review has its own stars column which is different
+updated_stars = refined.rename(columns = {"stars":"business_rating"})
+```
+
+
+```{python}
+# using chunks for this dataset because the file is too large to load at once
+review = pd.read_json("/Users/shannon/Documents/PSTAT-131-Project/Data/yelp datasets/review.json", lines = True, chunksize = 1000000)
+```
+
+```{python}
+# merging the chunks to the food_businesses dataset. This also converts the JSON into a pandas dataframe
+chunks = []
+for chunk in review:
+  # merging each chunk with the respective data in food_business
+  merged = pd.merge(updated_stars, chunk, how = "inner", on = "business_id")
+  # adds all the merged chunks together in a list to account for all the data
+  chunks.append(merged)
+merged_dataset = pd.concat(chunks)
+```
+
+```{python}
+# finishing touches
+pd.set_option('display.max_columns', None)
+pd.set_option('display.max_rows', None)
+# remove date category
+no_date = merged_dataset.drop(["date"], axis = 1)
+# we only want places that sell food
+food_places = no_date[no_date["categories"].str.contains("Food") | no_date["categories"].str.contains("Restaurants")]
+yelpdata = food_places.drop(["categories"], axis = 1)
+```
+
+```{python}
+yelpdata.to_csv("/Users/shannon/Documents/PSTAT-131-Project/Data/yelpbusinessreviews.csv", index = False)
+```
