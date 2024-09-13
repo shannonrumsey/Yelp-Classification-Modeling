@@ -1,6 +1,6 @@
 # Yelp-Classification-Modeling
 
-!(Photo of one business's Yelp page)[images/Screen Shot 2022-12-02 at 1.48.49 PM.png]
+(Photo of one business's Yelp page)[images/Screen Shot 2022-12-02 at 1.48.49 PM.png]
 
 The company, Yelp, provides an amazing platform for business owners and customers alike. When someone uses the website or app, they contribute data that helps open the door to answering many questions. An essential part of the Yelp interface is the business ratings and reviews which enables users to share their experiences or hear from others.
 
