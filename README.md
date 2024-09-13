@@ -1,38 +1,10 @@
 # Yelp-Classification-Modeling
 
+(Photo of one business's Yelp page)[Screen Shot 2022-12-02 at 1.48.49 PM.png]
+The company, Yelp, provides an amazing platform for business owners and customers alike. When someone uses the website or app, they contribute data that helps open the door to answering many questions. An essential part of the Yelp interface is the business ratings and reviews which enables users to share their experiences or hear from others.
 
-### Goal:
-I aimed to determine whether the city of a business could be classified or predicted based on review data. To do this, I collected a large dataset of reviews for businesses in different cities and used machine learning techniques to build and compare the performance of four different models.
+Famous real estate tycoon, Lord Harold Samuel, has been quoted as saying “[t]here are three things that matter in property: location, location, location”. That being said, the hypothesis follows that if location is so important, as Samuel describes, then ratings and reviews should be connected somehow. In practice, our model will take in review and rating information as a means to predict the location of a food-related business, with our sample being enclosed in the Santa Barbara County.
 
 
 
-### Codebook:
-Name / Data Type / Description
 
-name / character / Name of the food-related business
-
-city / nominal / Carpenteria, Goleta, Isla Vista, Montecito, Santa Barbara, and Summerland. City that the food-related business is in
-
-latitude / double / Business's location with respect to the equator
-
-longitude / double / Business's location with respect to the meridian
-
-business_rating / ordinal / 1.5, 2, 2.5, 3, 3.5, 4, 4.5, and 5. Overall rating a business receives from Yelp users
-
-review_count / integer / Number of reviews left on the page of a particular business
-
-bad_count / integer / Total number of occurrences of the word "bad" in the reviews left on a particular business
-
-good_count / integer / Total number of occurrences of the word "good" in the reviews left on a particular business
-
-sentiment_score / double / The ratio of positive words in all reviews for a business divided by the total number of words
-
-mean_len / double / The average length of reviews left on the business page
-
-review_stars / double / The average number of stars left on the business by users who wrote a review
-
-useful_stars / double / Total number of instances a review was voted "useful" on the busienss's page
-
-funny_total / double / Total number of instances a review was voted "funny" on the busienss's page
-
-cool_total / double / Total number of instances a review was voted "cool" on the busienss's page
